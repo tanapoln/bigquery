@@ -4,6 +4,7 @@ import (
 	"code.google.com/p/goauth2/oauth"
 	"code.google.com/p/goauth2/oauth/jwt"
 	bigquery "code.google.com/p/google-api-go-client/bigquery/v2"
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"net/http"
@@ -72,6 +73,10 @@ func (c *Client) InsertRow(projectId, datasetId, tableId string, rowData map[str
 	if err != nil {
 		fmt.Println("Error inserting row: ", err)
 		return err
+	}
+
+	if len(result.InsertErrors) > 0 {
+		return errors.New("Error inserting row")
 	}
 
 	return nil
