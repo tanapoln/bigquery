@@ -37,8 +37,6 @@ func (c *Client) connect() (*bigquery.Service, error) {
 			fmt.Println("REUSE SERVICE")
 			return c.service, nil
 		}
-	} else {
-
 	}
 
 	// generate auth token and create service object
