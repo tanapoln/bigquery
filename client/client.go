@@ -3,9 +3,9 @@ package client
 import (
 	"code.google.com/p/goauth2/oauth"
 	"code.google.com/p/goauth2/oauth/jwt"
-	bigquery "code.google.com/p/google-api-go-client/bigquery/v2"
 	"errors"
 	"fmt"
+	bigquery "github.com/Dailyburn/google-api-go-client-bigquery/bigquery/v2"
 	"io/ioutil"
 	"net/http"
 	"strconv"
@@ -29,8 +29,6 @@ func New(pemPath, serviceAccountEmailAddress, serviceUserAccountClientId, client
 }
 
 func (c *Client) connect() (*bigquery.Service, error) {
-	fmt.Println("CONNECT")
-
 	if c.token != nil {
 		fmt.Println("token expired", c.token.Expired())
 		fmt.Println("token expiry", c.token.Expiry)
@@ -43,7 +41,6 @@ func (c *Client) connect() (*bigquery.Service, error) {
 
 	}
 
-	fmt.Println("REAUTH SERVICE")
 	// generate auth token and create service object
 	authScope := bigquery.BigqueryScope
 	pemKeyBytes, err := ioutil.ReadFile(c.pemPath)
