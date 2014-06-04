@@ -9,6 +9,7 @@ import (
 	"io/ioutil"
 	"net/http"
 	"strconv"
+	"time"
 )
 
 const AuthUrl = "https://accounts.google.com/o/oauth2/auth"
@@ -107,6 +108,116 @@ func (c *Client) InsertRow(projectId, datasetId, tableId string, rowData map[str
 	return nil
 }
 
+// PageQuery executes the query using bq's paging mechanism to load all results
+/*
+First attempt - send query, build full results set and return all results - may need to look sending results back via channel as a stream or something along those lines though
+*/
+func (c *Client) PagedQuery(pageSize int, dataset, project, queryStr string) ([][]interface{}, []string, error) {
+	service, err := c.connect()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	datasetRef := &bigquery.DatasetReference{
+		DatasetId: dataset,
+		ProjectId: project,
+	}
+
+	query := &bigquery.QueryRequest{
+		DefaultDataset: datasetRef,
+		MaxResults:     int64(pageSize),
+		Kind:           "json",
+		Query:          queryStr,
+	}
+
+	qr, err := service.Jobs.Query(project, query).Do()
+
+	if err != nil {
+		fmt.Println("Error loading query: ", err)
+		return nil, nil, err
+	}
+
+	var headers []string
+	rows := [][]interface{}{}
+
+	if qr.JobComplete {
+		headers = c.headersForResults(qr)
+		rows = c.formatResults(qr, len(qr.Rows))
+	} else {
+		fmt.Println("Query still running, need to do some work to wait for it to complete.")
+	}
+
+	if qr.TotalRows > uint64(pageSize) || !qr.JobComplete {
+		resultChan := make(chan [][]interface{})
+		headersChan := make(chan []string)
+
+		go c.pageOverJob(len(rows), qr.JobReference, qr.PageToken, resultChan, headersChan)
+
+	L:
+		for {
+			select {
+			case h, ok := <-headersChan:
+				if ok {
+					headers = h
+				}
+			case newRows, ok := <-resultChan:
+				if !ok {
+					break L
+				}
+				// add new rows to our existing row data
+				rows = append(rows, newRows...)
+			}
+		}
+	}
+
+	return rows, headers, nil
+}
+
+// TODO: for the give job page over any remaining results and send them back over the given channel
+func (c *Client) pageOverJob(rowCount int, jobRef *bigquery.JobReference, pageToken string, resultChan chan [][]interface{}, headersChan chan []string) error {
+	service, err := c.connect()
+	if err != nil {
+		return err
+	}
+
+	qrc := service.Jobs.GetQueryResults(jobRef.ProjectId, jobRef.JobId)
+	if len(pageToken) > 0 {
+		qrc.PageToken(pageToken)
+	}
+
+	qr, err := qrc.Do()
+	if err != nil {
+		fmt.Println("Error loading additional data: ", err)
+		close(resultChan)
+		return err
+	}
+
+	if qr.JobComplete {
+		if headersChan != nil {
+			headersChan <- c.headersForJobResults(qr)
+			close(headersChan)
+		}
+
+		// send back the rows we got
+		rows := c.formatResultsFromJob(qr, len(qr.Rows))
+		resultChan <- rows
+		rowCount = rowCount + len(rows)
+	}
+
+	if qr.TotalRows > uint64(rowCount) || !qr.JobComplete {
+		if qr.JobReference == nil {
+			c.pageOverJob(rowCount, jobRef, pageToken, resultChan, headersChan)
+		} else {
+			c.pageOverJob(rowCount, qr.JobReference, qr.PageToken, resultChan, nil)
+		}
+	} else {
+		close(resultChan)
+		return nil
+	}
+
+	return nil
+}
+
 // SyncQuery executes an arbitrary query string and returns the result synchronously (unless the response takes longer than the provided timeout)
 func (c *Client) SyncQuery(dataset, project, queryStr string, maxResults int64) ([][]interface{}, error) {
 	service, err := c.connect()
@@ -138,6 +249,20 @@ func (c *Client) SyncQuery(dataset, project, queryStr string, maxResults int64) 
 		numRows = int(maxResults)
 	}
 
+	rows := c.formatResults(results, numRows)
+	return rows, nil
+}
+
+func (c *Client) headersForResults(results *bigquery.QueryResponse) []string {
+	headers := []string{}
+	numColumns := len(results.Schema.Fields)
+	for c := 0; c < numColumns; c++ {
+		headers = append(headers, results.Schema.Fields[c].Name)
+	}
+	return headers
+}
+
+func (c *Client) formatResults(results *bigquery.QueryResponse, numRows int) [][]interface{} {
 	rows := make([][]interface{}, numRows)
 	for r := 0; r < int(numRows); r++ {
 		numColumns := len(results.Schema.Fields)
@@ -148,8 +273,30 @@ func (c *Client) SyncQuery(dataset, project, queryStr string, maxResults int64) 
 		}
 		rows[r] = row
 	}
+	return rows
+}
 
-	return rows, nil
+func (c *Client) formatResultsFromJob(results *bigquery.GetQueryResultsResponse, numRows int) [][]interface{} {
+	rows := make([][]interface{}, numRows)
+	for r := 0; r < int(numRows); r++ {
+		numColumns := len(results.Schema.Fields)
+		dataRow := results.Rows[r]
+		row := make([]interface{}, numColumns)
+		for c := 0; c < numColumns; c++ {
+			row[c] = dataRow.F[c].V
+		}
+		rows[r] = row
+	}
+	return rows
+}
+
+func (c *Client) headersForJobResults(results *bigquery.GetQueryResultsResponse) []string {
+	headers := []string{}
+	numColumns := len(results.Schema.Fields)
+	for c := 0; c < numColumns; c++ {
+		headers = append(headers, results.Schema.Fields[c].Name)
+	}
+	return headers
 }
 
 // Count loads the row count for the provided dataset.tablename
