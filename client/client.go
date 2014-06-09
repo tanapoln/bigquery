@@ -9,11 +9,12 @@ import (
 	"io/ioutil"
 	"net/http"
 	"strconv"
-	"time"
 )
 
 const AuthUrl = "https://accounts.google.com/o/oauth2/auth"
 const TokenUrl = "https://accounts.google.com/o/oauth2/token"
+
+const DefaultPageSize = 5000
 
 type Client struct {
 	accountEmailAddress string
@@ -108,13 +109,25 @@ func (c *Client) InsertRow(projectId, datasetId, tableId string, rowData map[str
 	return nil
 }
 
-// PageQuery executes the query using bq's paging mechanism to load all results
+func (c *Client) AsyncQuery(pageSize int, dataset, project, queryStr string, headerChan chan []string, dataChan chan [][]interface{}, errorChan chan error) {
+	c.pagedQuery(pageSize, dataset, project, queryStr, headerChan, dataChan, errorChan)
+}
+
+func (c *Client) Query(dataset, project, queryStr string) ([][]interface{}, []string, error) {
+	return c.pagedQuery(DefaultPageSize, dataset, project, queryStr, nil, nil, nil)
+}
+
 /*
 First attempt - send query, build full results set and return all results - may need to look sending results back via channel as a stream or something along those lines though
 */
-func (c *Client) PagedQuery(pageSize int, dataset, project, queryStr string) ([][]interface{}, []string, error) {
+// PageQuery executes the query using bq's paging mechanism to load all results
+func (c *Client) pagedQuery(pageSize int, dataset, project, queryStr string, headerChan chan []string, dataChan chan [][]interface{}, errorChan chan error) ([][]interface{}, []string, error) {
+	fmt.Println("paged query")
 	service, err := c.connect()
 	if err != nil {
+		if errorChan != nil {
+			errorChan <- err
+		}
 		return nil, nil, err
 	}
 
@@ -134,6 +147,9 @@ func (c *Client) PagedQuery(pageSize int, dataset, project, queryStr string) ([]
 
 	if err != nil {
 		fmt.Println("Error loading query: ", err)
+		if errorChan != nil {
+			errorChan <- err
+		}
 		return nil, nil, err
 	}
 
@@ -141,10 +157,13 @@ func (c *Client) PagedQuery(pageSize int, dataset, project, queryStr string) ([]
 	rows := [][]interface{}{}
 
 	if qr.JobComplete {
+		fmt.Println("job complete")
 		headers = c.headersForResults(qr)
 		rows = c.formatResults(qr, len(qr.Rows))
-	} else {
-		fmt.Println("Query still running, need to do some work to wait for it to complete.")
+		if headerChan != nil && dataChan != nil {
+			headerChan <- headers
+			dataChan <- rows
+		}
 	}
 
 	if qr.TotalRows > uint64(pageSize) || !qr.JobComplete {
@@ -158,23 +177,45 @@ func (c *Client) PagedQuery(pageSize int, dataset, project, queryStr string) ([]
 			select {
 			case h, ok := <-headersChan:
 				if ok {
-					headers = h
+					if headerChan != nil {
+						fmt.Println("send headers...")
+						headerChan <- h
+					} else {
+						headers = h
+					}
 				}
 			case newRows, ok := <-resultChan:
 				if !ok {
+					fmt.Println("exit paged query read")
 					break L
 				}
-				// add new rows to our existing row data
-				rows = append(rows, newRows...)
+				if dataChan != nil {
+					// send results out to dataChan
+					fmt.Println("send rows...")
+					dataChan <- newRows
+				} else {
+					fmt.Println("data chan nil")
+					// add new rows to our existing row data
+					rows = append(rows, newRows...)
+				}
 			}
 		}
 	}
 
+	if headerChan != nil {
+		close(headerChan)
+	}
+	if dataChan != nil {
+		close(dataChan)
+	}
+
+	fmt.Println("exiting pagedQuery")
 	return rows, headers, nil
 }
 
-// TODO: for the give job page over any remaining results and send them back over the given channel
+// pageOverJob loads results for the given job reference and if the total results has not been hit continues to load recursively
 func (c *Client) pageOverJob(rowCount int, jobRef *bigquery.JobReference, pageToken string, resultChan chan [][]interface{}, headersChan chan []string) error {
+	fmt.Println("page over job")
 	service, err := c.connect()
 	if err != nil {
 		return err
@@ -205,12 +246,14 @@ func (c *Client) pageOverJob(rowCount int, jobRef *bigquery.JobReference, pageTo
 	}
 
 	if qr.TotalRows > uint64(rowCount) || !qr.JobComplete {
+		fmt.Println("CONT PAGE OVER JOB")
 		if qr.JobReference == nil {
 			c.pageOverJob(rowCount, jobRef, pageToken, resultChan, headersChan)
 		} else {
 			c.pageOverJob(rowCount, qr.JobReference, qr.PageToken, resultChan, nil)
 		}
 	} else {
+		fmt.Println("ENDING PAGE OVER JOB")
 		close(resultChan)
 		return nil
 	}
@@ -253,6 +296,7 @@ func (c *Client) SyncQuery(dataset, project, queryStr string, maxResults int64) 
 	return rows, nil
 }
 
+// headersForResults extracts the header slice from a QueryResponse
 func (c *Client) headersForResults(results *bigquery.QueryResponse) []string {
 	headers := []string{}
 	numColumns := len(results.Schema.Fields)
@@ -262,6 +306,7 @@ func (c *Client) headersForResults(results *bigquery.QueryResponse) []string {
 	return headers
 }
 
+// formatResults extracts the result rows from a QueryResponse
 func (c *Client) formatResults(results *bigquery.QueryResponse, numRows int) [][]interface{} {
 	rows := make([][]interface{}, numRows)
 	for r := 0; r < int(numRows); r++ {
@@ -276,6 +321,7 @@ func (c *Client) formatResults(results *bigquery.QueryResponse, numRows int) [][
 	return rows
 }
 
+// formatResultsFromJob extracts the result rows from a GetQueryResultsResponse
 func (c *Client) formatResultsFromJob(results *bigquery.GetQueryResultsResponse, numRows int) [][]interface{} {
 	rows := make([][]interface{}, numRows)
 	for r := 0; r < int(numRows); r++ {
@@ -290,6 +336,7 @@ func (c *Client) formatResultsFromJob(results *bigquery.GetQueryResultsResponse,
 	return rows
 }
 
+// headersForJobResults extracts the header slice from a GetQueryResultsResponse
 func (c *Client) headersForJobResults(results *bigquery.GetQueryResultsResponse) []string {
 	headers := []string{}
 	numColumns := len(results.Schema.Fields)
