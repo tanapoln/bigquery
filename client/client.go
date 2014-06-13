@@ -173,26 +173,25 @@ func (c *Client) pagedQuery(pageSize int, dataset, project, queryStr string, dat
 	}
 
 	if qr.TotalRows > uint64(pageSize) || !qr.JobComplete {
-		resultChan := make(chan [][]interface{})
-		headersChan := make(chan []string)
+		resultChan := make(chan processedData)
 
-		go c.pageOverJob(len(rows), qr.JobReference, qr.PageToken, resultChan, headersChan)
+		go c.pageOverJob(len(rows), qr.JobReference, qr.PageToken, resultChan)
 
 	L:
 		for {
 			select {
-			case h, ok := <-headersChan:
-				if ok {
-					headers = h
-				}
-			case newRows, ok := <-resultChan:
+			case data, ok := <-resultChan:
 				if !ok {
 					break L
 				}
 				if dataChan != nil {
-					dataChan <- ClientData{Headers: headers, Rows: newRows}
+					if len(data.headers) > 0 {
+						headers = data.headers
+					}
+					dataChan <- ClientData{Headers: headers, Rows: data.rows}
 				} else {
-					rows = append(rows, newRows...)
+					headers = data.headers
+					rows = append(rows, data.rows...)
 				}
 			}
 		}
@@ -205,8 +204,13 @@ func (c *Client) pagedQuery(pageSize int, dataset, project, queryStr string, dat
 	return rows, headers, nil
 }
 
+type processedData struct {
+	rows    [][]interface{}
+	headers []string
+}
+
 // pageOverJob loads results for the given job reference and if the total results has not been hit continues to load recursively
-func (c *Client) pageOverJob(rowCount int, jobRef *bigquery.JobReference, pageToken string, resultChan chan [][]interface{}, headersChan chan []string) error {
+func (c *Client) pageOverJob(rowCount int, jobRef *bigquery.JobReference, pageToken string, resultChan chan processedData) error {
 	service, err := c.connect()
 	if err != nil {
 		return err
@@ -225,22 +229,18 @@ func (c *Client) pageOverJob(rowCount int, jobRef *bigquery.JobReference, pageTo
 	}
 
 	if qr.JobComplete {
-		if headersChan != nil {
-			headersChan <- c.headersForJobResults(qr)
-			close(headersChan)
-		}
-
 		// send back the rows we got
+		headers := c.headersForJobResults(qr)
 		rows := c.formatResultsFromJob(qr, len(qr.Rows))
-		resultChan <- rows
+		resultChan <- processedData{rows, headers}
 		rowCount = rowCount + len(rows)
 	}
 
 	if qr.TotalRows > uint64(rowCount) || !qr.JobComplete {
 		if qr.JobReference == nil {
-			c.pageOverJob(rowCount, jobRef, pageToken, resultChan, headersChan)
+			c.pageOverJob(rowCount, jobRef, pageToken, resultChan)
 		} else {
-			c.pageOverJob(rowCount, qr.JobReference, qr.PageToken, resultChan, nil)
+			c.pageOverJob(rowCount, qr.JobReference, qr.PageToken, resultChan)
 		}
 	} else {
 		close(resultChan)
