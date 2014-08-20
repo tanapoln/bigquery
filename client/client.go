@@ -108,8 +108,15 @@ func (c *Client) InsertRow(projectId, datasetId, tableId string, rowData map[str
 		return err
 	}
 
+	// build an insert error string
 	if len(result.InsertErrors) > 0 {
-		return errors.New("Error inserting row")
+		outputStr := "Insert Errors: "
+		for _, e := range result.InsertErrors {
+			for _, m := range e.Errors {
+				outputStr += "error: " + m.Message + " | "
+			}
+		}
+		return errors.New(outputStr)
 	}
 
 	return nil
