@@ -221,7 +221,7 @@ func (c *Client) stdPagedQuery(service *bigquery.Service, pageSize int, dataset,
 func (c *Client) largeDataPagedQuery(service *bigquery.Service, pageSize int, dataset, project, queryStr string, dataChan chan ClientData) ([][]interface{}, []string, error) {
 	fmt.Println("largeDataPagedQuery")
 	// start query
-	tableRef := bigquery.TableReference{DatasetId: dataset, ProjectId: project, TableId: "tmp_visitors_production_visits"}
+	tableRef := bigquery.TableReference{DatasetId: dataset, ProjectId: project, TableId: c.tempTableName}
 	jobConfigQuery := bigquery.JobConfigurationQuery{}
 
 	jobConfigQuery.AllowLargeResults = true
