@@ -1,14 +1,15 @@
 package client
 
 import (
-	"code.google.com/p/goauth2/oauth"
-	"code.google.com/p/goauth2/oauth/jwt"
 	"errors"
 	"fmt"
-	bigquery "github.com/Dailyburn/google-api-go-client-bigquery/bigquery/v2"
 	"io/ioutil"
 	"net/http"
 	"strconv"
+
+	"code.google.com/p/goauth2/oauth"
+	"code.google.com/p/goauth2/oauth/jwt"
+	bigquery "github.com/Dailyburn/google-api-go-client-bigquery/bigquery/v2"
 )
 
 const AuthUrl = "https://accounts.google.com/o/oauth2/auth"
@@ -23,6 +24,8 @@ type Client struct {
 	pemPath             string
 	token               *oauth.Token
 	service             *bigquery.Service
+	allowLargeResults   bool
+	tempTableName       string
 }
 
 type ClientData struct {
@@ -32,17 +35,34 @@ type ClientData struct {
 }
 
 // Instantiate a new client with the given params and return a reference to it
-func New(pemPath, serviceAccountEmailAddress, serviceUserAccountClientId, clientSecret string) *Client {
-	return &Client{pemPath: pemPath, clientSecret: clientSecret, accountEmailAddress: serviceAccountEmailAddress, userAccountClientId: serviceUserAccountClientId}
+func New(pemPath, serviceAccountEmailAddress, serviceUserAccountClientId, clientSecret string, options ...func(*Client) error) *Client {
+	c := Client{pemPath: pemPath, clientSecret: clientSecret, accountEmailAddress: serviceAccountEmailAddress, userAccountClientId: serviceUserAccountClientId}
+
+	for _, option := range options {
+		err := option(&c)
+		if err != nil {
+			return nil
+		}
+	}
+
+	return &c
+}
+
+func AllowLargeResults(shouldAllow bool, tempTableName string) func(*Client) error {
+	return func(c *Client) error {
+		return c.setAllowLargeResults(shouldAllow, tempTableName)
+	}
+}
+
+func (c *Client) setAllowLargeResults(shouldAllow bool, tempTableName string) error {
+	c.allowLargeResults = shouldAllow
+	c.tempTableName = tempTableName
+	return nil
 }
 
 func (c *Client) connect() (*bigquery.Service, error) {
 	if c.token != nil {
-		fmt.Println("token expired", c.token.Expired())
-		fmt.Println("token expiry", c.token.Expiry)
-
 		if !c.token.Expired() && c.service != nil {
-			fmt.Println("REUSE SERVICE")
 			return c.service, nil
 		}
 	}
@@ -108,15 +128,8 @@ func (c *Client) InsertRow(projectId, datasetId, tableId string, rowData map[str
 		return err
 	}
 
-	// build an insert error string
 	if len(result.InsertErrors) > 0 {
-		outputStr := "Insert Errors: "
-		for _, e := range result.InsertErrors {
-			for _, m := range e.Errors {
-				outputStr += "error: " + m.Message + " | "
-			}
-		}
-		return errors.New(outputStr)
+		return errors.New("Error inserting row")
 	}
 
 	return nil
@@ -127,22 +140,14 @@ func (c *Client) AsyncQuery(pageSize int, dataset, project, queryStr string, dat
 	c.pagedQuery(pageSize, dataset, project, queryStr, dataChan)
 }
 
-// Query load the data for the query paging if necessary and return the data rows, headers and error
+// Query loads the data for the query paging if necessary and return the data rows, headers and error
 func (c *Client) Query(dataset, project, queryStr string) ([][]interface{}, []string, error) {
 	return c.pagedQuery(DefaultPageSize, dataset, project, queryStr, nil)
 }
 
-// pagedQuery executes the query using bq's paging mechanism to load all results and sends them back via dataChan if available, otherwise it returns the full result set, headers and error as return values
-func (c *Client) pagedQuery(pageSize int, dataset, project, queryStr string, dataChan chan ClientData) ([][]interface{}, []string, error) {
-	// connect to service
-	service, err := c.connect()
-	if err != nil {
-		if dataChan != nil {
-			dataChan <- ClientData{Err: err}
-		}
-		return nil, nil, err
-	}
-
+// stdPagedQuery executes a query using default job parameters and paging over the results, returning them over the data chan provided
+func (c *Client) stdPagedQuery(service *bigquery.Service, pageSize int, dataset, project, queryStr string, dataChan chan ClientData) ([][]interface{}, []string, error) {
+	fmt.Println("std paged query")
 	datasetRef := &bigquery.DatasetReference{
 		DatasetId: dataset,
 		ProjectId: project,
@@ -155,7 +160,6 @@ func (c *Client) pagedQuery(pageSize int, dataset, project, queryStr string, dat
 		Query:          queryStr,
 	}
 
-	// start query
 	qr, err := service.Jobs.Query(project, query).Do()
 
 	if err != nil {
@@ -174,31 +178,33 @@ func (c *Client) pagedQuery(pageSize int, dataset, project, queryStr string, dat
 	if qr.JobComplete {
 		headers = c.headersForResults(qr)
 		rows = c.formatResults(qr, len(qr.Rows))
+
 		if dataChan != nil {
 			dataChan <- ClientData{Headers: headers, Rows: rows}
 		}
 	}
 
 	if qr.TotalRows > uint64(pageSize) || !qr.JobComplete {
-		resultChan := make(chan processedData)
+		resultChan := make(chan [][]interface{})
+		headersChan := make(chan []string)
 
-		go c.pageOverJob(len(rows), qr.JobReference, qr.PageToken, resultChan)
+		go c.pageOverJob(len(rows), qr.JobReference, qr.PageToken, resultChan, headersChan)
 
 	L:
 		for {
 			select {
-			case data, ok := <-resultChan:
+			case h, ok := <-headersChan:
+				if ok {
+					headers = h
+				}
+			case newRows, ok := <-resultChan:
 				if !ok {
 					break L
 				}
 				if dataChan != nil {
-					if len(data.headers) > 0 {
-						headers = data.headers
-					}
-					dataChan <- ClientData{Headers: headers, Rows: data.rows}
+					dataChan <- ClientData{Headers: headers, Rows: newRows}
 				} else {
-					headers = data.headers
-					rows = append(rows, data.rows...)
+					rows = append(rows, newRows...)
 				}
 			}
 		}
@@ -211,13 +217,109 @@ func (c *Client) pagedQuery(pageSize int, dataset, project, queryStr string, dat
 	return rows, headers, nil
 }
 
-type processedData struct {
-	rows    [][]interface{}
-	headers []string
+// largeDataPagedQuery builds a job and inserts it into the job queue allowing the flexibility to set the custom AllowLargeResults flag for the job
+func (c *Client) largeDataPagedQuery(service *bigquery.Service, pageSize int, dataset, project, queryStr string, dataChan chan ClientData) ([][]interface{}, []string, error) {
+	fmt.Println("largeDataPagedQuery")
+	// start query
+	tableRef := bigquery.TableReference{DatasetId: dataset, ProjectId: project, TableId: "tmp_visitors_production_visits"}
+	jobConfigQuery := bigquery.JobConfigurationQuery{}
+
+	jobConfigQuery.AllowLargeResults = true
+	jobConfigQuery.Query = queryStr
+	jobConfigQuery.DestinationTable = &tableRef
+	jobConfigQuery.WriteDisposition = "WRITE_TRUNCATE"
+	jobConfigQuery.CreateDisposition = "CREATE_IF_NEEDED"
+
+	jobConfig := bigquery.JobConfiguration{}
+
+	jobConfig.Query = &jobConfigQuery
+
+	job := bigquery.Job{}
+	job.Configuration = &jobConfig
+
+	jobInsert := service.Jobs.Insert(project, &job)
+	runningJob, jerr := jobInsert.Do()
+
+	if jerr != nil {
+		fmt.Println("Error inserting job!", jerr)
+	}
+
+	qr, err := service.Jobs.GetQueryResults(project, runningJob.JobReference.JobId).Do()
+
+	if err != nil {
+		fmt.Println("Error loading query: ", err)
+		if dataChan != nil {
+			dataChan <- ClientData{Err: err}
+		}
+
+		return nil, nil, err
+	}
+
+	var headers []string
+	rows := [][]interface{}{}
+
+	// if query is completed process, otherwise begin checking for results
+	if qr.JobComplete {
+		headers = c.headersForJobResults(qr)
+		rows = c.formatResultsFromJob(qr, len(qr.Rows))
+		if dataChan != nil {
+			dataChan <- ClientData{Headers: headers, Rows: rows}
+		}
+	}
+
+	if qr.TotalRows > uint64(pageSize) || !qr.JobComplete {
+		resultChan := make(chan [][]interface{})
+		headersChan := make(chan []string)
+
+		go c.pageOverJob(len(rows), runningJob.JobReference, qr.PageToken, resultChan, headersChan)
+
+	L:
+		for {
+			select {
+			case h, ok := <-headersChan:
+				if ok {
+					headers = h
+				}
+			case newRows, ok := <-resultChan:
+				if !ok {
+					break L
+				}
+				if dataChan != nil {
+					dataChan <- ClientData{Headers: headers, Rows: newRows}
+				} else {
+					rows = append(rows, newRows...)
+				}
+			}
+		}
+	}
+
+	if dataChan != nil {
+		close(dataChan)
+	}
+
+	return rows, headers, nil
+}
+
+// pagedQuery executes the query using bq's paging mechanism to load all results and sends them back via dataChan if available, otherwise it returns the full result set, headers and error as return values
+func (c *Client) pagedQuery(pageSize int, dataset, project, queryStr string, dataChan chan ClientData) ([][]interface{}, []string, error) {
+	// connect to service
+	service, err := c.connect()
+	if err != nil {
+		if dataChan != nil {
+			dataChan <- ClientData{Err: err}
+		}
+		return nil, nil, err
+	}
+
+	if c.allowLargeResults && len(c.tempTableName) > 0 {
+		return c.largeDataPagedQuery(service, pageSize, dataset, project, queryStr, dataChan)
+	}
+
+	return c.stdPagedQuery(service, pageSize, dataset, project, queryStr, dataChan)
 }
 
 // pageOverJob loads results for the given job reference and if the total results has not been hit continues to load recursively
-func (c *Client) pageOverJob(rowCount int, jobRef *bigquery.JobReference, pageToken string, resultChan chan processedData) error {
+func (c *Client) pageOverJob(rowCount int, jobRef *bigquery.JobReference, pageToken string, resultChan chan [][]interface{}, headersChan chan []string) error {
 	service, err := c.connect()
 	if err != nil {
 		return err
@@ -236,18 +338,22 @@ func (c *Client) pageOverJob(rowCount int, jobRef *bigquery.JobReference, pageTo
 	}
 
 	if qr.JobComplete {
+		if headersChan != nil {
+			headersChan <- c.headersForJobResults(qr)
+			close(headersChan)
+		}
+
 		// send back the rows we got
-		headers := c.headersForJobResults(qr)
 		rows := c.formatResultsFromJob(qr, len(qr.Rows))
-		resultChan <- processedData{rows, headers}
+		resultChan <- rows
 		rowCount = rowCount + len(rows)
 	}
 
 	if qr.TotalRows > uint64(rowCount) || !qr.JobComplete {
 		if qr.JobReference == nil {
-			c.pageOverJob(rowCount, jobRef, pageToken, resultChan)
+			c.pageOverJob(rowCount, jobRef, pageToken, resultChan, headersChan)
 		} else {
-			c.pageOverJob(rowCount, qr.JobReference, qr.PageToken, resultChan)
+			c.pageOverJob(rowCount, qr.JobReference, qr.PageToken, resultChan, nil)
 		}
 	} else {
 		close(resultChan)
