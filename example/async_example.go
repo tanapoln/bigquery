@@ -17,7 +17,7 @@ func main() {
 	bqClient := client.New(PEM_PATH, SERVICE_ACCOUNT_EMAIL, SERVICE_ACCOUNT_CLIENT_ID, SECRET)
 	query := "select * from publicdata:samples.shakespeare limit 500;"
 
-	dataChan := make(chan client.ClientData)
+	dataChan := make(chan client.Data)
 	go bqClient.AsyncQuery(100, DATASET, PROJECTID, query, dataChan)
 
 L:

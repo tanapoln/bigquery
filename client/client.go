@@ -12,14 +12,15 @@ import (
 	bigquery "github.com/Dailyburn/google-api-go-client-bigquery/bigquery/v2"
 )
 
-const AuthUrl = "https://accounts.google.com/o/oauth2/auth"
-const TokenUrl = "https://accounts.google.com/o/oauth2/token"
+const authURL = "https://accounts.google.com/o/oauth2/auth"
+const tokenURL = "https://accounts.google.com/o/oauth2/token"
 
-const DefaultPageSize = 5000
+const defaultPageSize = 5000
 
+// Client a big query client instance
 type Client struct {
 	accountEmailAddress string
-	userAccountClientId string
+	userAccountClientID string
 	clientSecret        string
 	pemPath             string
 	token               *oauth.Token
@@ -28,15 +29,16 @@ type Client struct {
 	tempTableName       string
 }
 
-type ClientData struct {
+// Data is a containing type used for Async data response handling including Headers, Rows and an Error that will be populated in the event of an Error querying
+type Data struct {
 	Headers []string
 	Rows    [][]interface{}
 	Err     error
 }
 
-// Instantiate a new client with the given params and return a reference to it
-func New(pemPath, serviceAccountEmailAddress, serviceUserAccountClientId, clientSecret string, options ...func(*Client) error) *Client {
-	c := Client{pemPath: pemPath, clientSecret: clientSecret, accountEmailAddress: serviceAccountEmailAddress, userAccountClientId: serviceUserAccountClientId}
+// New instantiates a new client with the given params and return a reference to it
+func New(pemPath, serviceAccountEmailAddress, serviceUserAccountClientID, clientSecret string, options ...func(*Client) error) *Client {
+	c := Client{pemPath: pemPath, clientSecret: clientSecret, accountEmailAddress: serviceAccountEmailAddress, userAccountClientID: serviceUserAccountClientID}
 
 	for _, option := range options {
 		err := option(&c)
@@ -48,18 +50,21 @@ func New(pemPath, serviceAccountEmailAddress, serviceUserAccountClientId, client
 	return &c
 }
 
+// AllowLargeResults is a configuration function that can be used to enable the AllowLargeResults setting of a bigquery request, as well as a temp table name to use to build the result data
 func AllowLargeResults(shouldAllow bool, tempTableName string) func(*Client) error {
 	return func(c *Client) error {
 		return c.setAllowLargeResults(shouldAllow, tempTableName)
 	}
 }
 
+//setAllowLargeResults - private function to set the AllowLargeResults and tempTableName values
 func (c *Client) setAllowLargeResults(shouldAllow bool, tempTableName string) error {
 	c.allowLargeResults = shouldAllow
 	c.tempTableName = tempTableName
 	return nil
 }
 
+// connect - opens a new connection to bigquery, reusing the token if possible or regenerating a new auth token if required
 func (c *Client) connect() (*bigquery.Service, error) {
 	if c.token != nil {
 		if !c.token.Expired() && c.service != nil {
@@ -85,11 +90,11 @@ func (c *Client) connect() (*bigquery.Service, error) {
 	c.token = token
 
 	config := &oauth.Config{
-		ClientId:     c.userAccountClientId,
+		ClientId:     c.userAccountClientID,
 		ClientSecret: c.clientSecret,
 		Scope:        authScope,
-		AuthURL:      "https://accounts.google.com/o/oauth2/auth",
-		TokenURL:     "https://accounts.google.com/o/oauth2/token",
+		AuthURL:      authURL,
+		TokenURL:     tokenURL,
 	}
 
 	transport := &oauth.Transport{
@@ -108,7 +113,8 @@ func (c *Client) connect() (*bigquery.Service, error) {
 	return service, nil
 }
 
-func (c *Client) InsertRow(projectId, datasetId, tableId string, rowData map[string]interface{}) error {
+// InsertRow inserts a new row into the desired project, dataset and table or returns an error
+func (c *Client) InsertRow(projectID, datasetID, tableID string, rowData map[string]interface{}) error {
 	service, err := c.connect()
 	if err != nil {
 		return err
@@ -122,7 +128,7 @@ func (c *Client) InsertRow(projectId, datasetId, tableId string, rowData map[str
 
 	insertRequest := &bigquery.TableDataInsertAllRequest{Rows: rows}
 
-	result, err := service.Tabledata.InsertAll(projectId, datasetId, tableId, insertRequest).Do()
+	result, err := service.Tabledata.InsertAll(projectID, datasetID, tableID, insertRequest).Do()
 	if err != nil {
 		fmt.Println("Error inserting row: ", err)
 		return err
@@ -135,18 +141,18 @@ func (c *Client) InsertRow(projectId, datasetId, tableId string, rowData map[str
 	return nil
 }
 
-// AsyncQuery loads the data by paging through the query results and sends back payloads over the dataChan - dataChan sends a payload containing ClientData objects made up of the headers, rows and an error attribute
-func (c *Client) AsyncQuery(pageSize int, dataset, project, queryStr string, dataChan chan ClientData) {
+// AsyncQuery loads the data by paging through the query results and sends back payloads over the dataChan - dataChan sends a payload containing Data objects made up of the headers, rows and an error attribute
+func (c *Client) AsyncQuery(pageSize int, dataset, project, queryStr string, dataChan chan Data) {
 	c.pagedQuery(pageSize, dataset, project, queryStr, dataChan)
 }
 
 // Query loads the data for the query paging if necessary and return the data rows, headers and error
 func (c *Client) Query(dataset, project, queryStr string) ([][]interface{}, []string, error) {
-	return c.pagedQuery(DefaultPageSize, dataset, project, queryStr, nil)
+	return c.pagedQuery(defaultPageSize, dataset, project, queryStr, nil)
 }
 
 // stdPagedQuery executes a query using default job parameters and paging over the results, returning them over the data chan provided
-func (c *Client) stdPagedQuery(service *bigquery.Service, pageSize int, dataset, project, queryStr string, dataChan chan ClientData) ([][]interface{}, []string, error) {
+func (c *Client) stdPagedQuery(service *bigquery.Service, pageSize int, dataset, project, queryStr string, dataChan chan Data) ([][]interface{}, []string, error) {
 	fmt.Println("std paged query")
 	datasetRef := &bigquery.DatasetReference{
 		DatasetId: dataset,
@@ -165,7 +171,7 @@ func (c *Client) stdPagedQuery(service *bigquery.Service, pageSize int, dataset,
 	if err != nil {
 		fmt.Println("Error loading query: ", err)
 		if dataChan != nil {
-			dataChan <- ClientData{Err: err}
+			dataChan <- Data{Err: err}
 		}
 
 		return nil, nil, err
@@ -180,7 +186,7 @@ func (c *Client) stdPagedQuery(service *bigquery.Service, pageSize int, dataset,
 		rows = c.formatResults(qr, len(qr.Rows))
 
 		if dataChan != nil {
-			dataChan <- ClientData{Headers: headers, Rows: rows}
+			dataChan <- Data{Headers: headers, Rows: rows}
 		}
 	}
 
@@ -202,7 +208,7 @@ func (c *Client) stdPagedQuery(service *bigquery.Service, pageSize int, dataset,
 					break L
 				}
 				if dataChan != nil {
-					dataChan <- ClientData{Headers: headers, Rows: newRows}
+					dataChan <- Data{Headers: headers, Rows: newRows}
 				} else {
 					rows = append(rows, newRows...)
 				}
@@ -218,7 +224,7 @@ func (c *Client) stdPagedQuery(service *bigquery.Service, pageSize int, dataset,
 }
 
 // largeDataPagedQuery builds a job and inserts it into the job queue allowing the flexibility to set the custom AllowLargeResults flag for the job
-func (c *Client) largeDataPagedQuery(service *bigquery.Service, pageSize int, dataset, project, queryStr string, dataChan chan ClientData) ([][]interface{}, []string, error) {
+func (c *Client) largeDataPagedQuery(service *bigquery.Service, pageSize int, dataset, project, queryStr string, dataChan chan Data) ([][]interface{}, []string, error) {
 	fmt.Println("largeDataPagedQuery")
 	// start query
 	tableRef := bigquery.TableReference{DatasetId: dataset, ProjectId: project, TableId: c.tempTableName}
@@ -249,7 +255,7 @@ func (c *Client) largeDataPagedQuery(service *bigquery.Service, pageSize int, da
 	if err != nil {
 		fmt.Println("Error loading query: ", err)
 		if dataChan != nil {
-			dataChan <- ClientData{Err: err}
+			dataChan <- Data{Err: err}
 		}
 
 		return nil, nil, err
@@ -263,7 +269,7 @@ func (c *Client) largeDataPagedQuery(service *bigquery.Service, pageSize int, da
 		headers = c.headersForJobResults(qr)
 		rows = c.formatResultsFromJob(qr, len(qr.Rows))
 		if dataChan != nil {
-			dataChan <- ClientData{Headers: headers, Rows: rows}
+			dataChan <- Data{Headers: headers, Rows: rows}
 		}
 	}
 
@@ -285,7 +291,7 @@ func (c *Client) largeDataPagedQuery(service *bigquery.Service, pageSize int, da
 					break L
 				}
 				if dataChan != nil {
-					dataChan <- ClientData{Headers: headers, Rows: newRows}
+					dataChan <- Data{Headers: headers, Rows: newRows}
 				} else {
 					rows = append(rows, newRows...)
 				}
@@ -301,12 +307,12 @@ func (c *Client) largeDataPagedQuery(service *bigquery.Service, pageSize int, da
 }
 
 // pagedQuery executes the query using bq's paging mechanism to load all results and sends them back via dataChan if available, otherwise it returns the full result set, headers and error as return values
-func (c *Client) pagedQuery(pageSize int, dataset, project, queryStr string, dataChan chan ClientData) ([][]interface{}, []string, error) {
+func (c *Client) pagedQuery(pageSize int, dataset, project, queryStr string, dataChan chan Data) ([][]interface{}, []string, error) {
 	// connect to service
 	service, err := c.connect()
 	if err != nil {
 		if dataChan != nil {
-			dataChan <- ClientData{Err: err}
+			dataChan <- Data{Err: err}
 		}
 		return nil, nil, err
 	}

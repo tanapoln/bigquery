@@ -29,7 +29,7 @@ Wraps the core big query google API exposing a simple client interface
     // run a sync query      
     query := "select * from publicdata:samples.shakespeare limit 500;"
 
-    dataChan := make(chan client.ClientData)
+    dataChan := make(chan client.Data)
     go bqClient.AsyncQuery(100, DATASET, PROJECTID, query, dataChan)
 
     L:
