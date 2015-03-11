@@ -50,14 +50,20 @@ func New(pemPath, serviceAccountEmailAddress, serviceUserAccountClientID, client
 	return &c
 }
 
-// AllowLargeResults is a configuration function that can be used to enable the AllowLargeResults setting of a bigquery request, as well as a temp table name to use to build the result data
+// AllowLargeResults is a configuration function that can be used to enable the AllowLargeResults setting
+// of a bigquery request, as well as a temp table name to use to build the result data
+//
+// An example use is:
+//
+// client.New(pemPath, serviceAccountEmailAddress, serviceUserAccountClientID, clientSecret, client.AllowLargeResults(true, "tempTableName"))
+//
 func AllowLargeResults(shouldAllow bool, tempTableName string) func(*Client) error {
 	return func(c *Client) error {
 		return c.setAllowLargeResults(shouldAllow, tempTableName)
 	}
 }
 
-//setAllowLargeResults - private function to set the AllowLargeResults and tempTableName values
+// setAllowLargeResults - private function to set the AllowLargeResults and tempTableName values
 func (c *Client) setAllowLargeResults(shouldAllow bool, tempTableName string) error {
 	c.allowLargeResults = shouldAllow
 	c.tempTableName = tempTableName
