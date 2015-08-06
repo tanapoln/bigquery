@@ -27,6 +27,8 @@ type Client struct {
 	service             *bigquery.Service
 	allowLargeResults   bool
 	tempTableName       string
+	flattenResults      bool
+	PrintDebug          bool
 }
 
 // Data is a containing type used for Async data response handling including Headers, Rows and an Error that will be populated in the event of an Error querying
@@ -39,6 +41,7 @@ type Data struct {
 // New instantiates a new client with the given params and return a reference to it
 func New(pemPath, serviceAccountEmailAddress, serviceUserAccountClientID, clientSecret string, options ...func(*Client) error) *Client {
 	c := Client{pemPath: pemPath, clientSecret: clientSecret, accountEmailAddress: serviceAccountEmailAddress, userAccountClientID: serviceUserAccountClientID}
+	c.PrintDebug = false
 
 	for _, option := range options {
 		err := option(&c)
@@ -57,16 +60,17 @@ func New(pemPath, serviceAccountEmailAddress, serviceUserAccountClientID, client
 //
 // client.New(pemPath, serviceAccountEmailAddress, serviceUserAccountClientID, clientSecret, client.AllowLargeResults(true, "tempTableName"))
 //
-func AllowLargeResults(shouldAllow bool, tempTableName string) func(*Client) error {
+func AllowLargeResults(shouldAllow bool, tempTableName string, flattenResults bool) func(*Client) error {
 	return func(c *Client) error {
-		return c.setAllowLargeResults(shouldAllow, tempTableName)
+		return c.setAllowLargeResults(shouldAllow, tempTableName, flattenResults)
 	}
 }
 
 // setAllowLargeResults - private function to set the AllowLargeResults and tempTableName values
-func (c *Client) setAllowLargeResults(shouldAllow bool, tempTableName string) error {
+func (c *Client) setAllowLargeResults(shouldAllow bool, tempTableName string, flattenResults bool) error {
 	c.allowLargeResults = shouldAllow
 	c.tempTableName = tempTableName
+	c.flattenResults = flattenResults
 	return nil
 }
 
@@ -126,9 +130,15 @@ func (c *Client) InsertRow(projectID, datasetID, tableID string, rowData map[str
 		return err
 	}
 
+	// convert to the custom type bigquery lib wants
+	jsonData := make(map[string]bigquery.JsonValue)
+	for k, v := range rowData {
+		jsonData[k] = bigquery.JsonValue(v)
+	}
+
 	rows := []*bigquery.TableDataInsertAllRequestRows{
 		{
-			Json: rowData,
+			Json: jsonData,
 		},
 	}
 
@@ -136,7 +146,7 @@ func (c *Client) InsertRow(projectID, datasetID, tableID string, rowData map[str
 
 	result, err := service.Tabledata.InsertAll(projectID, datasetID, tableID, insertRequest).Do()
 	if err != nil {
-		fmt.Println("Error inserting row: ", err)
+		c.printDebug("Error inserting row: ", err)
 		return err
 	}
 
@@ -159,7 +169,7 @@ func (c *Client) Query(dataset, project, queryStr string) ([][]interface{}, []st
 
 // stdPagedQuery executes a query using default job parameters and paging over the results, returning them over the data chan provided
 func (c *Client) stdPagedQuery(service *bigquery.Service, pageSize int, dataset, project, queryStr string, dataChan chan Data) ([][]interface{}, []string, error) {
-	fmt.Println("std paged query")
+	c.printDebug("std paged query")
 	datasetRef := &bigquery.DatasetReference{
 		DatasetId: dataset,
 		ProjectId: project,
@@ -175,7 +185,7 @@ func (c *Client) stdPagedQuery(service *bigquery.Service, pageSize int, dataset,
 	qr, err := service.Jobs.Query(project, query).Do()
 
 	if err != nil {
-		fmt.Println("Error loading query: ", err)
+		c.printDebug("Error loading query: ", err)
 		if dataChan != nil {
 			dataChan <- Data{Err: err}
 		}
@@ -188,9 +198,7 @@ func (c *Client) stdPagedQuery(service *bigquery.Service, pageSize int, dataset,
 
 	// if query is completed process, otherwise begin checking for results
 	if qr.JobComplete {
-		headers = c.headersForResults(qr)
-		rows = c.formatResults(qr, len(qr.Rows))
-
+		headers, rows = c.headersAndRows(qr.Schema, qr.Rows)
 		if dataChan != nil {
 			dataChan <- Data{Headers: headers, Rows: rows}
 		}
@@ -231,14 +239,26 @@ func (c *Client) stdPagedQuery(service *bigquery.Service, pageSize int, dataset,
 
 // largeDataPagedQuery builds a job and inserts it into the job queue allowing the flexibility to set the custom AllowLargeResults flag for the job
 func (c *Client) largeDataPagedQuery(service *bigquery.Service, pageSize int, dataset, project, queryStr string, dataChan chan Data) ([][]interface{}, []string, error) {
-	fmt.Println("largeDataPagedQuery")
+	c.printDebug("largeDataPagedQuery")
 	// start query
 	tableRef := bigquery.TableReference{DatasetId: dataset, ProjectId: project, TableId: c.tempTableName}
 	jobConfigQuery := bigquery.JobConfigurationQuery{}
 
+	datasetRef := &bigquery.DatasetReference{
+		DatasetId: dataset,
+		ProjectId: project,
+	}
+
 	jobConfigQuery.AllowLargeResults = true
 	jobConfigQuery.Query = queryStr
 	jobConfigQuery.DestinationTable = &tableRef
+	jobConfigQuery.DefaultDataset = datasetRef
+	if !c.flattenResults {
+		c.printDebug("setting FlattenResults to false")
+		// need a pointer to bool
+		f := false
+		jobConfigQuery.FlattenResults = &f
+	}
 	jobConfigQuery.WriteDisposition = "WRITE_TRUNCATE"
 	jobConfigQuery.CreateDisposition = "CREATE_IF_NEEDED"
 
@@ -253,17 +273,20 @@ func (c *Client) largeDataPagedQuery(service *bigquery.Service, pageSize int, da
 	runningJob, jerr := jobInsert.Do()
 
 	if jerr != nil {
-		fmt.Println("Error inserting job!", jerr)
+		c.printDebug("Error inserting job!", jerr)
+		if dataChan != nil {
+			dataChan <- Data{Err: jerr}
+		}
+		return nil, nil, jerr
 	}
 
 	qr, err := service.Jobs.GetQueryResults(project, runningJob.JobReference.JobId).Do()
 
 	if err != nil {
-		fmt.Println("Error loading query: ", err)
+		c.printDebug("Error loading query: ", err)
 		if dataChan != nil {
 			dataChan <- Data{Err: err}
 		}
-
 		return nil, nil, err
 	}
 
@@ -272,8 +295,7 @@ func (c *Client) largeDataPagedQuery(service *bigquery.Service, pageSize int, da
 
 	// if query is completed process, otherwise begin checking for results
 	if qr.JobComplete {
-		headers = c.headersForJobResults(qr)
-		rows = c.formatResultsFromJob(qr, len(qr.Rows))
+		headers, rows = c.headersAndRows(qr.Schema, qr.Rows)
 		if dataChan != nil {
 			dataChan <- Data{Headers: headers, Rows: rows}
 		}
@@ -344,19 +366,19 @@ func (c *Client) pageOverJob(rowCount int, jobRef *bigquery.JobReference, pageTo
 
 	qr, err := qrc.Do()
 	if err != nil {
-		fmt.Println("Error loading additional data: ", err)
+		c.printDebug("Error loading additional data: ", err)
 		close(resultChan)
 		return err
 	}
 
 	if qr.JobComplete {
+		headers, rows := c.headersAndRows(qr.Schema, qr.Rows)
 		if headersChan != nil {
-			headersChan <- c.headersForJobResults(qr)
+			headersChan <- headers
 			close(headersChan)
 		}
 
 		// send back the rows we got
-		rows := c.formatResultsFromJob(qr, len(qr.Rows))
 		resultChan <- rows
 		rowCount = rowCount + len(rows)
 	}
@@ -396,7 +418,7 @@ func (c *Client) SyncQuery(dataset, project, queryStr string, maxResults int64) 
 
 	results, err := service.Jobs.Query(project, query).Do()
 	if err != nil {
-		fmt.Println("Query Error: ", err)
+		c.printDebug("Query Error: ", err)
 		return nil, err
 	}
 
@@ -406,58 +428,86 @@ func (c *Client) SyncQuery(dataset, project, queryStr string, maxResults int64) 
 		numRows = int(maxResults)
 	}
 
-	rows := c.formatResults(results, numRows)
+	_, rows := c.headersAndRows(results.Schema, results.Rows)
 	return rows, nil
 }
 
-// headersForResults extracts the header slice from a QueryResponse
-func (c *Client) headersForResults(results *bigquery.QueryResponse) []string {
-	headers := []string{}
-	numColumns := len(results.Schema.Fields)
-	for c := 0; c < numColumns; c++ {
-		headers = append(headers, results.Schema.Fields[c].Name)
+func (c *Client) headersAndRows(bqSchema *bigquery.TableSchema, bqRows []*bigquery.TableRow) ([]string, [][]interface{}) {
+	headers := make([]string, len(bqSchema.Fields))
+	c.printDebug("len(bqRows) is", len(bqRows))
+	rows := make([][]interface{}, len(bqRows))
+	// Create headers
+	for i, f := range bqSchema.Fields {
+		headers[i] = f.Name
 	}
-	return headers
-}
-
-// formatResults extracts the result rows from a QueryResponse
-func (c *Client) formatResults(results *bigquery.QueryResponse, numRows int) [][]interface{} {
-	rows := make([][]interface{}, numRows)
-	for r := 0; r < int(numRows); r++ {
-		numColumns := len(results.Schema.Fields)
-		dataRow := results.Rows[r]
-		row := make([]interface{}, numColumns)
-		for c := 0; c < numColumns; c++ {
-			row[c] = dataRow.F[c].V
+	// Create rows
+	for i, tableRow := range bqRows {
+		row := make([]interface{}, len(bqSchema.Fields))
+		for j, tableCell := range tableRow.F {
+			schemaField := bqSchema.Fields[j]
+			if schemaField.Type == "RECORD" {
+				row[j] = c.nestedFieldsData(schemaField.Fields, tableCell.V)
+			} else {
+				row[j] = tableCell.V
+			}
 		}
-		rows[r] = row
+		rows[i] = row
+		c.printDebug(fmt.Sprintf("built rows[%d] %+v", i, row))
 	}
-	return rows
+	return headers, rows
 }
 
-// formatResultsFromJob extracts the result rows from a GetQueryResultsResponse
-func (c *Client) formatResultsFromJob(results *bigquery.GetQueryResultsResponse, numRows int) [][]interface{} {
-	rows := make([][]interface{}, numRows)
-	for r := 0; r < int(numRows); r++ {
-		numColumns := len(results.Schema.Fields)
-		dataRow := results.Rows[r]
-		row := make([]interface{}, numColumns)
-		for c := 0; c < numColumns; c++ {
-			row[c] = dataRow.F[c].V
+func (c *Client) nestedFieldsData(nestedFields []*bigquery.TableFieldSchema, tableCellVal interface{}) interface{} {
+	// the contents of the nested data is pretty crazy... takes a lot of debugging
+	switch tcv := tableCellVal.(type) {
+	// non-repeated RECORD
+	case map[string]interface{}:
+		data := make(map[string]interface{})
+		vals, ok := tcv["f"]
+		if !ok {
+			c.printDebug("No f key found in nested values!")
 		}
-		rows[r] = row
-	}
-	return rows
-}
 
-// headersForJobResults extracts the header slice from a GetQueryResultsResponse
-func (c *Client) headersForJobResults(results *bigquery.GetQueryResultsResponse) []string {
-	headers := []string{}
-	numColumns := len(results.Schema.Fields)
-	for c := 0; c < numColumns; c++ {
-		headers = append(headers, results.Schema.Fields[c].Name)
+		for i, f := range nestedFields {
+			v := vals.([]interface{})[i]
+			vv := v.(map[string]interface{})["v"]
+			if f.Type == "RECORD" {
+				data[f.Name] = c.nestedFieldsData(f.Fields, vv)
+			} else {
+				data[f.Name] = vv
+			}
+		}
+		return data
+	// REPEATED RECORD
+	case []interface{}:
+		data := make([]map[string]interface{}, len(tcv))
+		for j, mapv := range tcv {
+			d := make(map[string]interface{})
+			mapvv, ok := mapv.(map[string]interface{})["v"]
+			if !ok {
+				c.printDebug("No v key found in nested+repeated values!")
+			}
+			vals, ok := mapvv.(map[string]interface{})["f"]
+			if !ok {
+				c.printDebug("No f key found in nested+repeated values!")
+			}
+
+			for i, f := range nestedFields {
+				v := vals.([]interface{})[i]
+				vv := v.(map[string]interface{})["v"]
+				if f.Type == "RECORD" {
+					d[f.Name] = c.nestedFieldsData(f.Fields, vv)
+				} else {
+					d[f.Name] = vv
+				}
+			}
+			data[j] = d
+		}
+		return data
+	default:
+		c.printDebug(fmt.Sprintf("Unexpected type in nestedFieldsdata: %T", tcv))
+		return nil
 	}
-	return headers
 }
 
 // Count loads the row count for the provided dataset.tablename
@@ -471,4 +521,10 @@ func (c *Client) Count(dataset, project, datasetTable string) int64 {
 		}
 	}
 	return 0
+}
+
+func (c *Client) printDebug(v ...interface{}) {
+	if c.PrintDebug {
+		fmt.Println(v)
+	}
 }
