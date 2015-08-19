@@ -6,6 +6,7 @@ import (
 	"io/ioutil"
 	"net/http"
 	"strconv"
+	"time"
 
 	"code.google.com/p/goauth2/oauth"
 	"code.google.com/p/goauth2/oauth/jwt"
@@ -239,7 +240,8 @@ func (c *Client) stdPagedQuery(service *bigquery.Service, pageSize int, dataset,
 
 // largeDataPagedQuery builds a job and inserts it into the job queue allowing the flexibility to set the custom AllowLargeResults flag for the job
 func (c *Client) largeDataPagedQuery(service *bigquery.Service, pageSize int, dataset, project, queryStr string, dataChan chan Data) ([][]interface{}, []string, error) {
-	c.printDebug("largeDataPagedQuery")
+	c.printDebug("largeDataPagedQuery starting")
+	ts := time.Now()
 	// start query
 	tableRef := bigquery.TableReference{DatasetId: dataset, ProjectId: project, TableId: c.tempTableName}
 	jobConfigQuery := bigquery.JobConfigurationQuery{}
@@ -295,13 +297,14 @@ func (c *Client) largeDataPagedQuery(service *bigquery.Service, pageSize int, da
 
 	// if query is completed process, otherwise begin checking for results
 	if qr.JobComplete {
+		c.printDebug("job complete, got rows", len(qr.Rows))
 		headers, rows = c.headersAndRows(qr.Schema, qr.Rows)
 		if dataChan != nil {
 			dataChan <- Data{Headers: headers, Rows: rows}
 		}
 	}
 
-	if qr.TotalRows > uint64(pageSize) || !qr.JobComplete {
+	if !qr.JobComplete {
 		resultChan := make(chan [][]interface{})
 		headersChan := make(chan []string)
 
@@ -312,6 +315,7 @@ func (c *Client) largeDataPagedQuery(service *bigquery.Service, pageSize int, da
 			select {
 			case h, ok := <-headersChan:
 				if ok {
+					c.printDebug("got headers")
 					headers = h
 				}
 			case newRows, ok := <-resultChan:
@@ -319,6 +323,7 @@ func (c *Client) largeDataPagedQuery(service *bigquery.Service, pageSize int, da
 					break L
 				}
 				if dataChan != nil {
+					c.printDebug("got rows", len(newRows))
 					dataChan <- Data{Headers: headers, Rows: newRows}
 				} else {
 					rows = append(rows, newRows...)
@@ -330,7 +335,7 @@ func (c *Client) largeDataPagedQuery(service *bigquery.Service, pageSize int, da
 	if dataChan != nil {
 		close(dataChan)
 	}
-
+	c.printDebug("largeDataPagedQuery completed in ", time.Now().Sub(ts).Seconds(), "s")
 	return rows, headers, nil
 }
 
@@ -372,6 +377,7 @@ func (c *Client) pageOverJob(rowCount int, jobRef *bigquery.JobReference, pageTo
 	}
 
 	if qr.JobComplete {
+		c.printDebug("qr.JobComplete")
 		headers, rows := c.headersAndRows(qr.Schema, qr.Rows)
 		if headersChan != nil {
 			headersChan <- headers
@@ -379,11 +385,13 @@ func (c *Client) pageOverJob(rowCount int, jobRef *bigquery.JobReference, pageTo
 		}
 
 		// send back the rows we got
+		c.printDebug("sending rows")
 		resultChan <- rows
 		rowCount = rowCount + len(rows)
 	}
 
 	if qr.TotalRows > uint64(rowCount) || !qr.JobComplete {
+		c.printDebug("!qr.JobComplete")
 		if qr.JobReference == nil {
 			c.pageOverJob(rowCount, jobRef, pageToken, resultChan, headersChan)
 		} else {
@@ -433,8 +441,10 @@ func (c *Client) SyncQuery(dataset, project, queryStr string, maxResults int64) 
 }
 
 func (c *Client) headersAndRows(bqSchema *bigquery.TableSchema, bqRows []*bigquery.TableRow) ([]string, [][]interface{}) {
+	c.printDebug("headersAndRows starting")
+	ts := time.Now()
 	headers := make([]string, len(bqSchema.Fields))
-	c.printDebug("len(bqRows) is", len(bqRows))
+	// c.printDebug("len(bqRows) is", len(bqRows))
 	rows := make([][]interface{}, len(bqRows))
 	// Create headers
 	for i, f := range bqSchema.Fields {
@@ -452,8 +462,9 @@ func (c *Client) headersAndRows(bqSchema *bigquery.TableSchema, bqRows []*bigque
 			}
 		}
 		rows[i] = row
-		c.printDebug(fmt.Sprintf("built rows[%d] %+v", i, row))
+		// c.printDebug(fmt.Sprintf("built rows[%d] %+v", i, row))
 	}
+	c.printDebug("headersAndRows completed in ", time.Now().Sub(ts).Seconds(), "s")
 	return headers, rows
 }
 
