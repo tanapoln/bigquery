@@ -3,13 +3,15 @@ package client
 import (
 	"errors"
 	"fmt"
+
 	"io/ioutil"
-	"net/http"
 	"strconv"
 	"time"
 
-	"code.google.com/p/goauth2/oauth"
-	"code.google.com/p/goauth2/oauth/jwt"
+	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/google"
+	//"code.google.com/p/goauth2/oauth"
+	//"code.google.com/p/goauth2/oauth/jwt"
 	bigquery "github.com/Dailyburn/google-api-go-client-bigquery/bigquery/v2"
 )
 
@@ -24,7 +26,7 @@ type Client struct {
 	userAccountClientID string
 	clientSecret        string
 	pemPath             string
-	token               *oauth.Token
+	token               *oauth2.Token
 	service             *bigquery.Service
 	allowLargeResults   bool
 	tempTableName       string
@@ -78,42 +80,23 @@ func (c *Client) setAllowLargeResults(shouldAllow bool, tempTableName string, fl
 // connect - opens a new connection to bigquery, reusing the token if possible or regenerating a new auth token if required
 func (c *Client) connect() (*bigquery.Service, error) {
 	if c.token != nil {
-		if !c.token.Expired() && c.service != nil {
+		if !c.token.Valid() && c.service != nil {
 			return c.service, nil
 		}
 	}
 
 	// generate auth token and create service object
-	authScope := bigquery.BigqueryScope
+	//authScope := bigquery.BigqueryScope
 	pemKeyBytes, err := ioutil.ReadFile(c.pemPath)
 	if err != nil {
 		panic(err)
 	}
 
-	t := jwt.NewToken(c.accountEmailAddress, bigquery.BigqueryScope, pemKeyBytes)
-
-	httpClient := &http.Client{}
-	token, err := t.Assert(httpClient)
-	if err != nil {
-		return nil, err
-	}
-
-	c.token = token
-
-	config := &oauth.Config{
-		ClientId:     c.userAccountClientID,
-		ClientSecret: c.clientSecret,
-		Scope:        authScope,
-		AuthURL:      authURL,
-		TokenURL:     tokenURL,
-	}
-
-	transport := &oauth.Transport{
-		Token:  token,
-		Config: config,
-	}
-
-	client := transport.Client()
+	t, err := google.JWTConfigFromJSON(
+		pemKeyBytes,
+		"https://www.googleapis.com/auth/bigquery")
+	//t := jwt.NewToken(c.accountEmailAddress, bigquery.BigqueryScope, pemKeyBytes)
+	client := t.Client(oauth2.NoContext)
 
 	service, err := bigquery.New(client)
 	if err != nil {
