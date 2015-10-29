@@ -1,13 +1,13 @@
 # bigquery:
 
-Higher level Go wrapper for the google Big Query API 
+Higher level Go wrapper for the google Big Query API
 
 Wraps the core big query google API exposing a simple client interface
 
 # Usage
 
-    // basic use 
-    // To get the JSON credantials file : Google Developrs Console -> API Console -> Credentials -> Add Credentials -> Add Service Account -> Download JSON key 
+    // basic use
+    // To get the JSON credantials file : Google Developrs Console -> API Console -> Credentials -> Add Credentials -> Add Service Account -> Download JSON key
     bqClient := client.New(JSON_PEM_PATH)
 
     // run a sync query
@@ -25,9 +25,9 @@ Wraps the core big query google API exposing a simple client interface
     // =================================================================
     query := "select * from publicdata:samples.shakespeare limit 100;"
 
-    bqClient := client.New(PEM_PATH, SERVICE_ACCOUNT_EMAIL, SERVICE_ACCOUNT_CLIENT_ID, SECRET)
+    bqClient := client.New(JSON_PEM_PATH)
 
-    // run a sync query      
+    // run a sync query
     query := "select * from publicdata:samples.shakespeare limit 500;"
 
     dataChan := make(chan client.Data)
@@ -52,6 +52,6 @@ Wraps the core big query google API exposing a simple client interface
                   break L
               }
           }
-        }        
+        }
 
-    
+
