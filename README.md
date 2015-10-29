@@ -7,7 +7,7 @@ Wraps the core big query google API exposing a simple client interface
 # Usage
 
     // basic use
-    // To get the JSON credantials file : Google Developrs Console -> API Console -> Credentials -> Add Credentials -> Add Service Account -> Download JSON key
+    // To get the JSON credantials file : Google Developers Console -> API Console -> Credentials -> Add Credentials -> Add Service Account -> Download JSON key
     bqClient := client.New(JSON_PEM_PATH)
 
     // run a sync query
