@@ -7,14 +7,11 @@ import (
 )
 
 const PEM_PATH = "path to your local pem file"
-const SERVICE_ACCOUNT_EMAIL = "your account email"
-const SERVICE_ACCOUNT_CLIENT_ID = "your service account client id"
-const SECRET = "your-secret"
 const PROJECTID = "your-projectid"
 const DATASET = "your-dataset-name"
 
 func main() {
-	bqClient := client.New(PEM_PATH, SERVICE_ACCOUNT_EMAIL, SERVICE_ACCOUNT_CLIENT_ID, SECRET)
+	bqClient := client.New(JSON_PEM_PATH)
 	query := "select * from publicdata:samples.shakespeare limit 500;"
 
 	dataChan := make(chan client.Data)
