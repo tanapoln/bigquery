@@ -6,7 +6,7 @@ import (
 	"github.com/Dailyburn/bigquery/client"
 )
 
-const PEM_PATH = "path to your local json pem file"
+const JSON_PEM_PATH = "path to your local json pem file"
 const PROJECTID = "your-project-id"
 
 func main() {
