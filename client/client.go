@@ -114,7 +114,7 @@ func (c *Client) InsertRow(projectID, datasetID, tableID string, rowData map[str
 		return err
 	}
 
-	insertRequest := BuildBigQueryInsertRequest([]map[string]interface{}{rowData})
+	insertRequest := buildBigQueryInsertRequest([]map[string]interface{}{rowData})
 
 	result, err := service.Tabledata.InsertAll(projectID, datasetID, tableID, insertRequest).Do()
 	if err != nil {
@@ -135,7 +135,7 @@ func (c *Client) InsertRows(projectID, datasetID, tableID string, rows []map[str
 		return err
 	}
 
-	insertRequest := BuildBigQueryInsertRequest(rows)
+	insertRequest := buildBigQueryInsertRequest(rows)
 	result, err := service.Tabledata.InsertAll(projectID, datasetID, tableID, insertRequest).Do()
 	if err != nil {
 		c.printDebug("Error inserting rows: ", err)
@@ -149,7 +149,7 @@ func (c *Client) InsertRows(projectID, datasetID, tableID string, rows []map[str
 	return nil
 }
 
-func BuildBigQueryInsertRequest(rows []map[string]interface{}) *bigquery.TableDataInsertAllRequest {
+func buildBigQueryInsertRequest(rows []map[string]interface{}) *bigquery.TableDataInsertAllRequest {
 	requestRows := []*bigquery.TableDataInsertAllRequestRows{}
 	for _, row := range rows {
 		requestRows = append(requestRows, &bigquery.TableDataInsertAllRequestRows{Json: rowToBigQueryJSON(row)})
