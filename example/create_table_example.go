@@ -22,7 +22,7 @@ func main() {
 
 	tableName := "some_table_name"
 
-	err := bqClient.InsertNewTable(tableName, PROJECTID, DATASETID, fields)
+	err := bqClient.InsertNewTable(PROJECTID, DATASETID, tableName, fields)
 	if err != nil {
 		fmt.Println("Table insert failed:", err)
 	}
