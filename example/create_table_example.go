@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 
-	"github.com/Dailyburn/bigquery/client"
+	"github.com/dailyburn/bigquery/client"
 )
 
 const PROJECTID = "your-projectid"

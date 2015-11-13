@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 
-	"github.com/Dailyburn/bigquery/client"
+	"github.com/dailyburn/bigquery/client"
 )
 
 const PEM_PATH = "path to your local pem file"
