@@ -47,8 +47,8 @@ func (c *Client) InsertNewTableIfDoesNotExist(projectID, datasetID, tableID stri
 	return nil
 }
 
-// ModifyTableSchema sends a patch request to bigquery to modify the table with only the fields provided
-func (c *Client) ModifyTableSchema(projectID, datasetID, tableID string, fields map[string]string) error {
+// PatchTableSchema sends a patch request to bigquery to modify the table with only the fields provided
+func (c *Client) PatchTableSchema(projectID, datasetID, tableID string, fields map[string]string) error {
 	service, err := c.connect()
 	if err != nil {
 		return err
