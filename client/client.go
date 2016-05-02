@@ -8,10 +8,6 @@ import (
 	"strconv"
 	"time"
 
-	"golang.org/x/oauth2"
-	"golang.org/x/oauth2/google"
-	//"code.google.com/p/goauth2/oauth"
-	//"code.google.com/p/goauth2/oauth/jwt"
 	bigquery "github.com/dailyburn/google-api-go-client-bigquery/bigquery/v2"
 )
 
