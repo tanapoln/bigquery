@@ -249,7 +249,24 @@ func (c *Client) largeDataPagedQuery(service *bigquery.Service, pageSize int, da
 		return nil, nil, jerr
 	}
 
-	qr, err := service.Jobs.GetQueryResults(project, runningJob.JobReference.JobId).Do()
+	var qr *bigquery.GetQueryResultsResponse
+	var err error
+
+	// Periodically, job references are not created, but errors are also not thrown.
+	// In this scenario, retry upto 5 times to get a job reference before giving up.
+	for i := 1; ; i++ {
+		qr, err = service.Jobs.GetQueryResults(project, runningJob.JobReference.JobId).Do()
+		if i >= 5 || qr.JobReference != nil || err != nil {
+			if i > 1 {
+				c.printDebug("Took %v tries to get a job reference", i)
+			}
+			break
+		}
+	}
+
+	if err == nil && qr.JobReference == nil {
+		err = fmt.Errorf("missing job reference")
+	}
 
 	if err != nil {
 		c.printDebug("Error loading query: ", err)
