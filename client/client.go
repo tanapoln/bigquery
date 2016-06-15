@@ -19,6 +19,7 @@ const authURL = "https://accounts.google.com/o/oauth2/auth"
 const tokenURL = "https://accounts.google.com/o/oauth2/token"
 
 const defaultPageSize = 5000
+const defaultRequestTimeout = 60000
 
 // Client a big query client instance
 type Client struct {
@@ -29,6 +30,7 @@ type Client struct {
 	tempTableName     string
 	flattenResults    bool
 	PrintDebug        bool
+	RequestTimeout    int64 // how long (in milliseconds) to try to create requests for large data (not a query timeout); defaults to 60000
 }
 
 // Data is a containing type used for Async data response handling including Headers, Rows and an Error that will be populated in the event of an Error querying
@@ -41,7 +43,8 @@ type Data struct {
 // New instantiates a new client with the given params and return a reference to it
 func New(pemPath string, options ...func(*Client) error) *Client {
 	c := Client{
-		pemPath: pemPath,
+		pemPath:        pemPath,
+		RequestTimeout: defaultRequestTimeout,
 	}
 
 	c.PrintDebug = false
@@ -253,9 +256,12 @@ func (c *Client) largeDataPagedQuery(service *bigquery.Service, pageSize int, da
 	var err error
 
 	// Periodically, job references are not created, but errors are also not thrown.
-	// In this scenario, retry upto 5 times to get a job reference before giving up.
+	// In this scenario, retry up to 5 times to get a job reference before giving up.
 	for i := 1; ; i++ {
-		qr, err = service.Jobs.GetQueryResults(project, runningJob.JobReference.JobId).Do()
+		r := service.Jobs.GetQueryResults(project, runningJob.JobReference.JobId)
+		r.TimeoutMs(c.RequestTimeout)
+		qr, err = r.Do()
+
 		if i >= 5 || qr.JobReference != nil || err != nil {
 			if i > 1 {
 				c.printDebug("Took %v tries to get a job reference", i)
