@@ -20,6 +20,7 @@ const tokenURL = "https://accounts.google.com/o/oauth2/token"
 
 const defaultPageSize = 5000
 const defaultRequestTimeout = 60000
+const maxRequestRetry = 5
 
 // Client a big query client instance
 type Client struct {
@@ -262,7 +263,7 @@ func (c *Client) largeDataPagedQuery(service *bigquery.Service, pageSize int, da
 		r.TimeoutMs(c.RequestTimeout)
 		qr, err = r.Do()
 
-		if i >= 5 || qr.JobReference != nil || err != nil {
+		if i >= maxRequestRetry || qr.JobReference != nil || err != nil {
 			if i > 1 {
 				c.printDebug("Took %v tries to get a job reference", i)
 			}
