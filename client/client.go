@@ -436,6 +436,10 @@ func (c *Client) SyncQuery(dataset, project, queryStr string, maxResults int64) 
 }
 
 func (c *Client) headersAndRows(bqSchema *bigquery.TableSchema, bqRows []*bigquery.TableRow) ([]string, [][]interface{}) {
+	if bqSchema == nil || bqRows == nil {
+		return nil, nil
+	}
+
 	c.printDebug("headersAndRows starting")
 	ts := time.Now()
 	headers := make([]string, len(bqSchema.Fields))
