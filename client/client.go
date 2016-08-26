@@ -10,8 +10,7 @@ import (
 
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
-	//"code.google.com/p/goauth2/oauth"
-	//"code.google.com/p/goauth2/oauth/jwt"
+
 	bigquery "github.com/dailyburn/google-api-go-client-bigquery/bigquery/v2"
 )
 
@@ -197,6 +196,9 @@ func (c *Client) stdPagedQuery(service *bigquery.Service, pageSize int, dataset,
 
 	qr, err := service.Jobs.Query(project, query).Do()
 
+	// extract the initial rows that have already been returned with the Query
+	headers, rows := c.headersAndRows(qr.Schema, qr.Rows)
+
 	if err != nil {
 		c.printDebug("Error loading query: ", err)
 		if dataChan != nil {
@@ -206,7 +208,7 @@ func (c *Client) stdPagedQuery(service *bigquery.Service, pageSize int, dataset,
 		return nil, nil, err
 	}
 
-	return c.processPagedQuery(qr.JobReference, qr.PageToken, dataChan)
+	return c.processPagedQuery(qr.JobReference, qr.PageToken, dataChan, headers, rows)
 }
 
 // largeDataPagedQuery builds a job and inserts it into the job queue allowing the flexibility to set the custom AllowLargeResults flag for the job
@@ -254,6 +256,8 @@ func (c *Client) largeDataPagedQuery(service *bigquery.Service, pageSize int, da
 	}
 
 	var qr *bigquery.GetQueryResultsResponse
+	var rows [][]interface{}
+	var headers []string
 	var err error
 
 	// Periodically, job references are not created, but errors are also not thrown.
@@ -262,6 +266,8 @@ func (c *Client) largeDataPagedQuery(service *bigquery.Service, pageSize int, da
 		r := service.Jobs.GetQueryResults(project, runningJob.JobReference.JobId)
 		r.TimeoutMs(c.RequestTimeout)
 		qr, err = r.Do()
+
+		headers, rows = c.headersAndRows(qr.Schema, qr.Rows)
 
 		if i >= maxRequestRetry || qr.JobReference != nil || err != nil {
 			if i > 1 {
@@ -283,7 +289,7 @@ func (c *Client) largeDataPagedQuery(service *bigquery.Service, pageSize int, da
 		return nil, nil, err
 	}
 
-	rows, headers, err := c.processPagedQuery(qr.JobReference, qr.PageToken, dataChan)
+	rows, headers, err = c.processPagedQuery(qr.JobReference, qr.PageToken, dataChan, headers, rows)
 	c.printDebug("largeDataPagedQuery completed in ", time.Now().Sub(ts).Seconds(), "s")
 
 	return rows, headers, err
@@ -307,14 +313,15 @@ func (c *Client) pagedQuery(pageSize int, dataset, project, queryStr string, dat
 	return c.stdPagedQuery(service, pageSize, dataset, project, queryStr, dataChan)
 }
 
-func (c *Client) processPagedQuery(jobRef *bigquery.JobReference, pageToken string, dataChan chan Data) ([][]interface{}, []string, error) {
-	var headers []string
-	rows := [][]interface{}{}
+func (c *Client) processPagedQuery(jobRef *bigquery.JobReference, pageToken string, dataChan chan Data, headers []string, rows [][]interface{}) ([][]interface{}, []string, error) {
+	if len(rows) > 0 {
+		dataChan <- Data{Headers: headers, Rows: rows}
+	}
 
 	resultChan := make(chan [][]interface{})
 	headersChan := make(chan []string)
 
-	go c.pageOverJob(0, jobRef, pageToken, resultChan, headersChan)
+	go c.pageOverJob(len(rows), jobRef, pageToken, resultChan, headersChan)
 
 L:
 	for {
