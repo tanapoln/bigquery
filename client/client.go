@@ -314,10 +314,6 @@ func (c *Client) pagedQuery(pageSize int, dataset, project, queryStr string, dat
 }
 
 func (c *Client) processPagedQuery(jobRef *bigquery.JobReference, pageToken string, dataChan chan Data, headers []string, rows [][]interface{}) ([][]interface{}, []string, error) {
-	if len(rows) > 0 {
-		dataChan <- Data{Headers: headers, Rows: rows}
-	}
-
 	resultChan := make(chan [][]interface{})
 	headersChan := make(chan []string)
 
