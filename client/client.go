@@ -1,7 +1,6 @@
 package client
 
 import (
-	"errors"
 	"fmt"
 
 	"io/ioutil"
@@ -10,7 +9,8 @@ import (
 
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
-	bigquery "google.golang.org/api/bigquery/v2"
+	"google.golang.org/api/bigquery/v2"
+	"github.com/pkg/errors"
 )
 
 const authURL = "https://accounts.google.com/o/oauth2/auth"
@@ -125,7 +125,7 @@ func (c *Client) InsertRow(projectID, datasetID, tableID string, rowData map[str
 	}
 
 	if len(result.InsertErrors) > 0 {
-		return errors.New("Error inserting row")
+		return errors.New("Error inserting row: %s")
 	}
 
 	return nil
@@ -145,7 +145,7 @@ func (c *Client) InsertRows(projectID, datasetID, tableID string, rows []map[str
 	}
 
 	if len(result.InsertErrors) > 0 {
-		return errors.New("Error inserting rows")
+		return errors.Errorf("Error inserting rows, first row: %+v", *result.InsertErrors[0].Errors[0])
 	}
 
 	return nil
@@ -483,7 +483,7 @@ func (c *Client) nestedFieldsData(nestedFields []*bigquery.TableFieldSchema, tab
 			}
 		}
 		return data
-	// REPEATED RECORD
+		// REPEATED RECORD
 	case []interface{}:
 		data := make([]map[string]interface{}, len(tcv))
 		for j, mapv := range tcv {
